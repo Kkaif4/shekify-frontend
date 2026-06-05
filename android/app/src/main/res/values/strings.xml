@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Shekify</string>
+    <string name="title_activity_main">Shekify</string>
+    <string name="package_name">app.shekify.music</string>
+    <string name="custom_url_scheme">app.shekify.music</string>
+</resources>
