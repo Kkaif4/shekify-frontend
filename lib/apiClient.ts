@@ -9,10 +9,14 @@ class ApiClient {
     this.onTokenRefreshedCallback = callback;
   }
 
-  async request(endpoint: string, options: RequestInit = {}): Promise<Response> {
+  async request(
+    endpoint: string,
+    options: RequestInit = {},
+  ): Promise<Response> {
     const token = await SecureTokenStorage.getAccessToken();
     const headers: HeadersInit = {
       "Content-Type": "application/json",
+      "ngrok-skip-browser-warning": "69420",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     };
@@ -24,7 +28,11 @@ class ApiClient {
     let response = await fetch(url, { ...options, headers });
 
     // If unauthorized, attempt to refresh the token and retry once
-    if (response.status === 401 && endpoint !== "/auth/login" && endpoint !== "/auth/refresh") {
+    if (
+      response.status === 401 &&
+      endpoint !== "/auth/login" &&
+      endpoint !== "/auth/refresh"
+    ) {
       const renewedToken = await this.refreshAccessToken();
       if (renewedToken) {
         const newHeaders: HeadersInit = {
@@ -45,7 +53,10 @@ class ApiClient {
     try {
       const res = await fetch(`${ENV.API_URL}/auth/refresh`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "69420",
+        },
         body: JSON.stringify({ refreshToken }),
       });
 
@@ -86,6 +97,29 @@ class ApiClient {
     if (this.refreshTimeout) {
       clearTimeout(this.refreshTimeout);
       this.refreshTimeout = null;
+    }
+  }
+
+  async fetchBlobUrl(endpoint: string): Promise<string | null> {
+    try {
+      const token = await SecureTokenStorage.getAccessToken();
+      const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+      const url = `${ENV.API_URL}${path}`;
+
+      const response = await fetch(url, {
+        headers: {
+          "ngrok-skip-browser-warning": "69420",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+
+      if (!response.ok) return null;
+
+      const blob = await response.blob();
+      return URL.createObjectURL(blob);
+    } catch (e) {
+      console.error("fetchBlobUrl failed:", e);
+      return null;
     }
   }
 }

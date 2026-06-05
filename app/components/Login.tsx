@@ -12,6 +12,9 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [toasts, setToasts] = useState<
+    { id: string; message: string; type: "info" | "error" | "success" }[]
+  >([]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,12 +32,21 @@ export default function Login() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "69420",
         },
         body: JSON.stringify({
           username: username.trim(),
           password: password,
         }),
       });
+      setToasts((prev) => [
+        ...prev,
+        {
+          id: Math.random().toString(),
+          message: "Login successful",
+          type: "success",
+        },
+      ]);
 
       const data = await response.json();
 
@@ -139,13 +151,6 @@ export default function Login() {
               )}
             </button>
           </form>
-
-          {/* Quick Info / Default Credentials */}
-          <div className="mt-8 pt-6 border-t border-brand-border text-center">
-            <span className="text-xs text-brand-text-secondary/50">
-              Default access for testing: <strong className="text-brand-text-secondary/70">admin / admin123</strong>
-            </span>
-          </div>
         </div>
       </div>
     </div>

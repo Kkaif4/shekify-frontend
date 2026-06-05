@@ -54,6 +54,55 @@ import DOMPurify from "dompurify";
 
 const API_BASE = ENV.API_URL;
 
+// Helper component: fetches cover images as blobs to bypass ngrok interstitial
+function CoverImage({
+  songId,
+  className,
+  fallbackClass,
+}: {
+  songId: string;
+  className?: string;
+  fallbackClass?: string;
+}) {
+  const [src, setSrc] = React.useState<string | null>(null);
+  const [failed, setFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    let revoke: string | null = null;
+    apiClient.fetchBlobUrl(`/songs/${songId}/cover`).then((url) => {
+      if (url) {
+        revoke = url;
+        setSrc(url);
+      } else {
+        setFailed(true);
+      }
+    });
+    return () => {
+      if (revoke) URL.revokeObjectURL(revoke);
+    };
+  }, [songId]);
+
+  if (failed || !src) {
+    return (
+      <div
+        className={
+          fallbackClass || "text-[9px] text-indigo-500 font-bold uppercase"
+        }
+      >
+        MP3
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      className={className || "w-full h-full object-cover"}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 export default function Dashboard() {
   const { token, user, logout, isAdmin } = useAuth();
 
@@ -83,13 +132,16 @@ export default function Dashboard() {
   // Playlist songs pagination states
   const [playlistSongsPage, setPlaylistSongsPage] = useState(1);
   const [playlistSongsTotalPages, setPlaylistSongsTotalPages] = useState(1);
-  const [playlistSongsLoadingMore, setPlaylistSongsLoadingMore] = useState(false);
+  const [playlistSongsLoadingMore, setPlaylistSongsLoadingMore] =
+    useState(false);
 
   // Autoplay state
   const [isAutoPlay, setIsAutoPlay] = useState(true);
 
   // Keyboard navigation highlight state
-  const [selectedSongIndex, setSelectedSongIndex] = useState<number | null>(null);
+  const [selectedSongIndex, setSelectedSongIndex] = useState<number | null>(
+    null,
+  );
 
   // Ingestion Widget State
   const [ingestSong, setIngestSong] = useState("");
@@ -206,7 +258,9 @@ export default function Dashboard() {
       setPlaylistSongsLoadingMore(true);
     }
     try {
-      const res = await apiClient.request(`/playlists/${playlistId}?page=${page}&limit=50`);
+      const res = await apiClient.request(
+        `/playlists/${playlistId}?page=${page}&limit=50`,
+      );
       const data = await res.json();
       if (res.ok) {
         if (page === 1) {
@@ -215,7 +269,9 @@ export default function Dashboard() {
           setActivePlaylistDetails((prev) => {
             if (!prev || prev.id !== playlistId) return prev;
             const existingIds = new Set(prev.songs.map((s) => s.id));
-            const newSongs = data.songs.filter((s: Song) => !existingIds.has(s.id));
+            const newSongs = data.songs.filter(
+              (s: Song) => !existingIds.has(s.id),
+            );
             return {
               ...prev,
               songs: [...prev.songs, ...newSongs],
@@ -435,17 +491,20 @@ export default function Dashboard() {
         if (res.ok) {
           const pl = playlists.find((p) => p.id === playlistId);
           addToast(`Added track to "${pl?.name || "playlist"}"`, "success");
-          
+
           setPlaylists((prev) =>
             prev.map((p) => {
               if (p.id === playlistId) {
                 const existingSongs = p.songs || [];
                 if (!existingSongs.some((s) => s.song_id === songId)) {
-                  return { ...p, songs: [...existingSongs, { song_id: songId }] };
+                  return {
+                    ...p,
+                    songs: [...existingSongs, { song_id: songId }],
+                  };
                 }
               }
               return p;
-            })
+            }),
           );
 
           if (activeView === "playlist" && activePlaylistId === playlistId) {
@@ -459,7 +518,7 @@ export default function Dashboard() {
           `/playlists/${playlistId}/songs/${songId}`,
           {
             method: "DELETE",
-          }
+          },
         );
         const data = await res.json();
 
@@ -477,7 +536,7 @@ export default function Dashboard() {
                 };
               }
               return p;
-            })
+            }),
           );
 
           if (activeView === "playlist" && activePlaylistId === playlistId) {
@@ -558,9 +617,55 @@ export default function Dashboard() {
     };
 
     const handleError = (e: any) => {
-      console.error("Native Audio Element Exception:", e);
+      if (
+        !audio.src ||
+        audio.src === window.location.href ||
+        audio.src.endsWith("/")
+      ) {
+        return;
+      }
+
+      const mediaError = audio.error;
+      let errorMessage = "Track temporarily unavailable";
+
+      if (mediaError) {
+        // Handle specific HTML5 MediaError codes
+        switch (mediaError.code) {
+          case 1: // MEDIA_ERR_ABORTED
+            // Playback aborted by the user or load transition, usually not a fatal error
+            console.debug(
+              "Playback request aborted (normal operation when shifting tracks rapidly).",
+            );
+            return;
+          case 2: // MEDIA_ERR_NETWORK
+            errorMessage =
+              "Network connection failed while streaming the audio track.";
+            break;
+          case 3: // MEDIA_ERR_DECODE
+            errorMessage = "Failed to decode the audio file format.";
+            break;
+          case 4: // MEDIA_ERR_SRC_NOT_SUPPORTED
+            errorMessage =
+              "The audio track URL could not be loaded or is in an unsupported format.";
+            break;
+          default:
+            if (mediaError.message) {
+              errorMessage = `Playback Error: ${mediaError.message}`;
+            }
+            break;
+        }
+
+        console.error("Native Audio Element Error:", {
+          code: mediaError.code,
+          message: mediaError.message || "No error message provided",
+          src: audio.src,
+        });
+      } else {
+        console.error("Native Audio Element Exception Event:", e);
+      }
+
       setIsPlaying(false);
-      addToast("Track temporarily unavailable from local storage", "error");
+      addToast(errorMessage, "error");
     };
 
     audio.addEventListener("timeupdate", handleTimeUpdate);
@@ -575,6 +680,9 @@ export default function Dashboard() {
       audio.removeEventListener("ended", handleEnded);
       audio.removeEventListener("error", handleError);
       audio.pause();
+      if (audio.src.startsWith("blob:")) {
+        URL.revokeObjectURL(audio.src);
+      }
       audio.src = "";
       audio.load();
     };
@@ -589,57 +697,73 @@ export default function Dashboard() {
 
   // Media Session Controls update with XSS sanitization
   useEffect(() => {
-    if (typeof window !== "undefined" && "mediaSession" in navigator && currentSong) {
-      const sanitize = (text: string) => DOMPurify.sanitize(text || "", { ALLOWED_TAGS: [] });
+    if (
+      typeof window === "undefined" ||
+      !("mediaSession" in navigator) ||
+      !currentSong
+    )
+      return;
 
-      const songTitle = sanitize(currentSong.title);
-      const songArtist = sanitize(currentSong.artist || "Unknown Artist");
-      const songAlbum = sanitize(currentSong.album || "Unknown Album");
+    const sanitize = (text: string) =>
+      DOMPurify.sanitize(text || "", { ALLOWED_TAGS: [] });
 
-      navigator.mediaSession.metadata = new window.MediaMetadata({
-        title: songTitle,
-        artist: songArtist,
-        album: songAlbum,
-        artwork: [
-          {
-            src: `${API_BASE}/songs/${currentSong.id}/cover?token=${token}`,
-            sizes: "512x512",
-            type: "image/png",
-          },
-        ],
-      });
+    const songTitle = sanitize(currentSong.title);
+    const songArtist = sanitize(currentSong.artist || "Unknown Artist");
+    const songAlbum = sanitize(currentSong.album || "Unknown Album");
 
-      // Media Session Action Handlers
-      navigator.mediaSession.setActionHandler("play", () => {
-        if (audioRef.current) {
-          audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
-        }
-      });
-      navigator.mediaSession.setActionHandler("pause", () => {
-        if (audioRef.current) {
-          audioRef.current.pause();
-          setIsPlaying(false);
-        }
-      });
-      navigator.mediaSession.setActionHandler("previoustrack", () => {
-        if (handleSkipPreviousRef.current) handleSkipPreviousRef.current();
-      });
-      navigator.mediaSession.setActionHandler("nexttrack", () => {
-        if (handleSkipNextRef.current) handleSkipNextRef.current();
-      });
-      navigator.mediaSession.setActionHandler("seekbackward", (details) => {
-        if (audioRef.current) {
-          const offset = details.seekOffset || 5;
-          audioRef.current.currentTime = Math.max(audioRef.current.currentTime - offset, 0);
-        }
-      });
-      navigator.mediaSession.setActionHandler("seekforward", (details) => {
-        if (audioRef.current) {
-          const offset = details.seekOffset || 5;
-          audioRef.current.currentTime = Math.min(audioRef.current.currentTime + offset, audioRef.current.duration || 0);
-        }
-      });
-    }
+    const coverUrl = `${API_BASE}/songs/${currentSong.id}/cover?token=${token}&ngrok-skip-browser-warning=69420`;
+
+    navigator.mediaSession.metadata = new window.MediaMetadata({
+      title: songTitle,
+      artist: songArtist,
+      album: songAlbum,
+      artwork: [
+        {
+          src: coverUrl,
+          sizes: "512x512",
+          type: "image/png",
+        },
+      ],
+    });
+
+    navigator.mediaSession.setActionHandler("play", () => {
+      if (audioRef.current) {
+        audioRef.current
+          .play()
+          .then(() => setIsPlaying(true))
+          .catch(() => {});
+      }
+    });
+    navigator.mediaSession.setActionHandler("pause", () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        setIsPlaying(false);
+      }
+    });
+    navigator.mediaSession.setActionHandler("previoustrack", () => {
+      if (handleSkipPreviousRef.current) handleSkipPreviousRef.current();
+    });
+    navigator.mediaSession.setActionHandler("nexttrack", () => {
+      if (handleSkipNextRef.current) handleSkipNextRef.current();
+    });
+    navigator.mediaSession.setActionHandler("seekbackward", (details) => {
+      if (audioRef.current) {
+        const offset = details.seekOffset || 5;
+        audioRef.current.currentTime = Math.max(
+          audioRef.current.currentTime - offset,
+          0,
+        );
+      }
+    });
+    navigator.mediaSession.setActionHandler("seekforward", (details) => {
+      if (audioRef.current) {
+        const offset = details.seekOffset || 5;
+        audioRef.current.currentTime = Math.min(
+          audioRef.current.currentTime + offset,
+          audioRef.current.duration || 0,
+        );
+      }
+    });
   }, [currentSong, token]);
 
   // Play a song and configure the active queue context
@@ -657,13 +781,16 @@ export default function Dashboard() {
 
     // NFR-2.1: Sever existing connection to release memory
     audioRef.current.pause();
+    if (audioRef.current.src.startsWith("blob:")) {
+      URL.revokeObjectURL(audioRef.current.src);
+    }
     audioRef.current.src = "";
     audioRef.current.load();
 
     setCurrentSong(song);
 
-    // Set src with query token
-    const streamUrl = `${API_BASE}/stream/${song.id}?token=${token}`;
+    // Set streaming URL with authentication token and ngrok bypass parameter
+    const streamUrl = `${API_BASE}/stream/${song.id}?token=${token}&ngrok-skip-browser-warning=69420`;
     audioRef.current.src = streamUrl;
     audioRef.current.load();
 
@@ -685,9 +812,15 @@ export default function Dashboard() {
       .play()
       .then(() => setIsPlaying(true))
       .catch((err) => {
+        if (err.name === "AbortError") {
+          console.debug(
+            "Play request was aborted (normal when changing tracks rapidly).",
+          );
+          return;
+        }
         console.error("Play failed:", err);
         setIsPlaying(false);
-        addToast("Track temporarily unavailable from local storage", "error");
+        addToast("Track temporarily unavailable", "error");
       });
   };
 
@@ -803,7 +936,13 @@ export default function Dashboard() {
         .play()
         .then(() => setIsPlaying(true))
         .catch((err) => {
-          console.error(err);
+          if (err.name === "AbortError") {
+            console.debug(
+              "Play request was aborted (normal when pausing quickly).",
+            );
+            return;
+          }
+          console.error("Resume playback failed:", err);
           addToast("Unable to resume playback", "error");
         });
     }
@@ -898,21 +1037,33 @@ export default function Dashboard() {
     if (!audioRef.current) return;
 
     audioRef.current.pause();
+    if (audioRef.current.src.startsWith("blob:")) {
+      URL.revokeObjectURL(audioRef.current.src);
+    }
     audioRef.current.src = "";
     audioRef.current.load();
 
     setCurrentSong(song);
-    audioRef.current.src = `${API_BASE}/stream/${song.id}?token=${token}`;
-    audioRef.current.load();
     setCurrentQueueIndex(index);
+
+    // Set streaming URL with authentication token and ngrok bypass parameter
+    const streamUrl = `${API_BASE}/stream/${song.id}?token=${token}&ngrok-skip-browser-warning=69420`;
+    audioRef.current.src = streamUrl;
+    audioRef.current.load();
 
     audioRef.current
       .play()
       .then(() => setIsPlaying(true))
       .catch((err) => {
-        console.error(err);
+        if (err.name === "AbortError") {
+          console.debug(
+            "Play request was aborted (normal when changing tracks rapidly).",
+          );
+          return;
+        }
+        console.error("Play from queue failed:", err);
         setIsPlaying(false);
-        addToast("Track temporarily unavailable from local storage", "error");
+        addToast("Track temporarily unavailable", "error");
       });
   };
 
@@ -1002,7 +1153,9 @@ export default function Dashboard() {
         {/* ── COLUMN 1: Left Navigation Sidebar ────────────────────────── */}
         <aside
           className={`fixed lg:relative inset-y-0 left-0 w-64 bg-brand-bg-secondary border-r border-brand-border flex flex-col justify-between shrink-0 z-50 lg:z-20 transition-transform duration-300 ease-in-out lg:translate-x-0 ${
-            isSidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+            isSidebarOpen
+              ? "translate-x-0"
+              : "-translate-x-full lg:translate-x-0"
           }`}
         >
           <div className="p-6 flex flex-col gap-8 overflow-y-auto flex-1">
@@ -1132,7 +1285,14 @@ export default function Dashboard() {
             </div>
             <div className="flex items-center justify-between text-[10px] text-brand-text-secondary/60 mt-1 pt-2 border-t border-brand-border/40 font-mono">
               <span>Version: v1.0.0</span>
-              <a href="https://shekify.app/privacy" target="_blank" rel="noopener noreferrer" className="hover:underline hover:text-white transition-colors">Privacy Policy</a>
+              <a
+                href="https://shekify.app/privacy"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:underline hover:text-white transition-colors"
+              >
+                Privacy Policy
+              </a>
             </div>
           </div>
         </aside>
@@ -1153,7 +1313,9 @@ export default function Dashboard() {
                 <div className="w-8 h-8 rounded-lg bg-brand-accent flex items-center justify-center">
                   <Music className="w-4 h-4 text-white" />
                 </div>
-                <span className="font-bold text-white tracking-tight">Shekify</span>
+                <span className="font-bold text-white tracking-tight">
+                  Shekify
+                </span>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -1189,7 +1351,6 @@ export default function Dashboard() {
               }
             }}
           >
-
             {/* ── VIEW ROUTING RENDERER ──────────────────────────────────── */}
             {activeView === "home" && (
               <div>
@@ -1230,7 +1391,8 @@ export default function Dashboard() {
                           No matches found
                         </h3>
                         <p className="text-xs text-brand-text-secondary max-w-xs mx-auto">
-                          Could not find any files matching your search filters in local indexes.
+                          Could not find any files matching your search filters
+                          in local indexes.
                         </p>
                       </>
                     ) : (
@@ -1255,8 +1417,12 @@ export default function Dashboard() {
                           <th className="pb-3">Title</th>
                           <th className="pb-3 hidden sm:table-cell">Artist</th>
                           <th className="pb-3 hidden md:table-cell">Album</th>
-                          <th className="pb-3 hidden lg:table-cell text-center">Year</th>
-                          <th className="pb-3 hidden sm:table-cell text-center">Duration</th>
+                          <th className="pb-3 hidden lg:table-cell text-center">
+                            Year
+                          </th>
+                          <th className="pb-3 hidden sm:table-cell text-center">
+                            Duration
+                          </th>
                           <th className="pb-3 text-center w-16">Add</th>
                         </tr>
                       </thead>
@@ -1296,20 +1462,9 @@ export default function Dashboard() {
                               </td>
                               <td className="py-3">
                                 <div className="w-10 h-10 rounded-lg overflow-hidden bg-brand-bg-primary border border-brand-border flex items-center justify-center shrink-0">
-                                  <img
-                                    src={`${API_BASE}/songs/${song.id}/cover?token=${token}`}
-                                    alt=""
+                                  <CoverImage
+                                    songId={song.id}
                                     className="w-full h-full object-cover"
-                                    onError={(e) => {
-                                      // Fallback on error
-                                      (e.target as HTMLElement).style.display =
-                                        "none";
-                                      const parent = (e.target as HTMLElement)
-                                        .parentElement;
-                                      if (parent) {
-                                        parent.innerHTML = `<div class="text-[9px] text-indigo-500 font-bold uppercase">MP3</div>`;
-                                      }
-                                    }}
                                   />
                                 </div>
                               </td>
@@ -1359,12 +1514,17 @@ export default function Dashboard() {
                                     ) : (
                                       <div className="max-h-[160px] overflow-y-auto">
                                         {playlists.map((pl) => {
-                                          const isInPlaylist = pl.songs?.some((s) => s.song_id === song.id) || false;
+                                          const isInPlaylist =
+                                            pl.songs?.some(
+                                              (s) => s.song_id === song.id,
+                                            ) || false;
                                           return (
                                             <label
                                               key={pl.id}
                                               className="flex items-center gap-3 w-full px-3 py-2 hover:bg-brand-border/30 transition-colors cursor-pointer select-none text-xs"
-                                              onClick={(e) => e.stopPropagation()}
+                                              onClick={(e) =>
+                                                e.stopPropagation()
+                                              }
                                             >
                                               <input
                                                 type="checkbox"
@@ -1410,21 +1570,68 @@ export default function Dashboard() {
                     <span className="text-[10px] uppercase font-bold tracking-widest text-brand-text-secondary">
                       PLAYLIST
                     </span>
-                    <h2 className="text-4xl md:text-5xl font-extrabold text-white mt-1 mb-2">
+                    <h2 className="text-4xl md:text-5xl font-extrabold text-white mt-1 mb-3">
                       {activePlaylistDetails.name}
                     </h2>
-                    <div className="flex items-center justify-center md:justify-start gap-4 text-xs text-brand-text-secondary">
-                      <span>{activePlaylistDetails.songs.length} Tracks</span>
-                      <span>•</span>
-                      <button
-                        onClick={() =>
-                          handleDeletePlaylist(activePlaylistDetails.id)
-                        }
-                        className="text-red-400 hover:text-red-300 font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        Delete Playlist
-                      </button>
+                    <div className="flex flex-col sm:flex-row items-center justify-center md:justify-start gap-4 text-xs text-brand-text-secondary">
+                      {activePlaylistDetails.songs.length > 0 && (
+                        <button
+                          onClick={() => {
+                            const isPlayingThisPlaylist =
+                              isPlaying &&
+                              playbackQueue.length ===
+                                activePlaylistDetails.songs.length &&
+                              playbackQueue.every(
+                                (song, i) =>
+                                  song.id ===
+                                  activePlaylistDetails.songs[i]?.id,
+                              );
+
+                            if (isPlayingThisPlaylist) {
+                              audioRef.current?.pause();
+                              setIsPlaying(false);
+                            } else {
+                              handlePlaySong(
+                                activePlaylistDetails.songs[0],
+                                activePlaylistDetails.songs,
+                              );
+                              setIsAutoPlay(true);
+                            }
+                          }}
+                          className="flex items-center gap-2 px-5 py-2 bg-brand-accent hover:bg-brand-accent-hover text-white text-xs font-bold rounded-full shadow-lg shadow-brand-accent/20 transition-all transform active:scale-95 cursor-pointer shrink-0"
+                        >
+                          {isPlaying &&
+                          playbackQueue.length ===
+                            activePlaylistDetails.songs.length &&
+                          playbackQueue.every(
+                            (song, i) =>
+                              song.id === activePlaylistDetails.songs[i]?.id,
+                          ) ? (
+                            <>
+                              <Pause className="w-3.5 h-3.5 fill-current" />
+                              Pause Playlist
+                            </>
+                          ) : (
+                            <>
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                              Play Playlist
+                            </>
+                          )}
+                        </button>
+                      )}
+                      <div className="flex items-center gap-4">
+                        <span>{activePlaylistDetails.songs.length} Tracks</span>
+                        <span>•</span>
+                        <button
+                          onClick={() =>
+                            handleDeletePlaylist(activePlaylistDetails.id)
+                          }
+                          className="text-red-400 hover:text-red-300 font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          Delete Playlist
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1451,7 +1658,9 @@ export default function Dashboard() {
                           <th className="pb-3">Title</th>
                           <th className="pb-3 hidden sm:table-cell">Artist</th>
                           <th className="pb-3 hidden md:table-cell">Album</th>
-                          <th className="pb-3 hidden sm:table-cell text-center">Duration</th>
+                          <th className="pb-3 hidden sm:table-cell text-center">
+                            Duration
+                          </th>
                           <th className="pb-3 text-center w-16">Remove</th>
                         </tr>
                       </thead>
@@ -1464,7 +1673,12 @@ export default function Dashboard() {
                               key={song.id}
                               data-index={index}
                               onClick={() => setSelectedSongIndex(index)}
-                              onDoubleClick={() => handlePlaySong(song, activePlaylistDetails.songs)}
+                              onDoubleClick={() =>
+                                handlePlaySong(
+                                  song,
+                                  activePlaylistDetails.songs,
+                                )
+                              }
                               className={`group border-b border-brand-border/40 hover:bg-brand-bg-secondary/50 transition-colors text-sm cursor-pointer ${
                                 isCurrent
                                   ? "text-brand-accent bg-brand-accent/5"
@@ -1494,19 +1708,9 @@ export default function Dashboard() {
                               </td>
                               <td className="py-3">
                                 <div className="w-10 h-10 rounded-lg overflow-hidden bg-brand-bg-primary border border-brand-border flex items-center justify-center shrink-0">
-                                  <img
-                                    src={`${API_BASE}/songs/${song.id}/cover?token=${token}`}
-                                    alt=""
+                                  <CoverImage
+                                    songId={song.id}
                                     className="w-full h-full object-cover"
-                                    onError={(e) => {
-                                      (e.target as HTMLElement).style.display =
-                                        "none";
-                                      const parent = (e.target as HTMLElement)
-                                        .parentElement;
-                                      if (parent) {
-                                        parent.innerHTML = `<div class="text-[9px] text-indigo-500 font-bold uppercase">MP3</div>`;
-                                      }
-                                    }}
                                   />
                                 </div>
                               </td>
@@ -1557,7 +1761,7 @@ export default function Dashboard() {
 
       {/* ── COLUMN 3: Bottom Persistent Audio Player Bar ─────────────── */}
       {/* ── COLUMN 3: Bottom Persistent Audio Player Bar ─────────────── */}
-      <footer className="h-20 sm:h-24 bg-brand-bg-secondary/95 backdrop-blur-md border-t border-brand-border flex flex-row items-center justify-between px-4 sm:px-6 z-40 select-none shadow-2xl shrink-0 relative">
+      <footer className="h-24 bg-brand-bg-secondary/95 backdrop-blur-md border-t border-brand-border flex flex-row items-center justify-between px-4 sm:px-6 z-40 select-none shadow-2xl shrink-0 relative">
         {/* Absolute mobile timeline on top border */}
         <div className="absolute top-0 inset-x-0 h-0.5 bg-brand-border/40 sm:hidden">
           <div
@@ -1567,21 +1771,13 @@ export default function Dashboard() {
         </div>
 
         {/* 4.1 Track Information Display (Left) */}
-        <div className="flex items-center gap-3 w-3/5 sm:w-1/4 min-w-0 pr-2">
+        <div className="flex items-center gap-2 sm:gap-3 flex-1 sm:flex-initial sm:w-1/4 min-w-0 pr-2">
           {currentSong ? (
             <div className="flex items-center gap-3 min-w-0 w-full">
               <div className="w-10 h-10 sm:w-14 sm:h-14 rounded-xl overflow-hidden bg-brand-bg-primary border border-brand-border flex items-center justify-center shrink-0 shadow-lg">
-                <img
-                  src={`${API_BASE}/songs/${currentSong.id}/cover?token=${token}`}
-                  alt=""
+                <CoverImage
+                  songId={currentSong.id}
                   className="w-full h-full object-cover"
-                  onError={(e) => {
-                    (e.target as HTMLElement).style.display = "none";
-                    const parent = (e.target as HTMLElement).parentElement;
-                    if (parent) {
-                      parent.innerHTML = `<div class="text-[10px] text-indigo-500 font-bold uppercase">MP3</div>`;
-                    }
-                  }}
                 />
               </div>
               <div className="flex flex-col min-w-0 truncate">
@@ -1604,23 +1800,12 @@ export default function Dashboard() {
         </div>
 
         {/* 4.2 Media Core Controls & Timeline (Center) */}
-        <div className="flex flex-col items-center justify-center w-auto sm:flex-1 max-w-2xl">
+        <div className="flex flex-col items-center justify-center flex-none sm:flex-1 max-w-2xl">
           {/* Controls */}
-          <div className="flex items-center gap-4 sm:gap-6">
-            <button
-              onClick={() => setIsAutoPlay(!isAutoPlay)}
-              className={`p-1.5 rounded-lg transition-colors cursor-pointer hidden sm:inline-flex ${
-                isAutoPlay
-                  ? "text-brand-accent hover:text-brand-accent"
-                  : "text-brand-text-secondary hover:text-white"
-              }`}
-              title={isAutoPlay ? "Autoplay Enabled" : "Autoplay Disabled"}
-            >
-              <Repeat className="w-4 h-4" />
-            </button>
+          <div className="flex items-center gap-3 sm:gap-6">
             <button
               onClick={toggleShuffle}
-              className={`p-1.5 rounded-lg transition-colors cursor-pointer hidden sm:inline-flex ${
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer inline-flex ${
                 isShuffle
                   ? "text-brand-accent hover:text-brand-accent"
                   : "text-brand-text-secondary hover:text-white"
@@ -1647,7 +1832,7 @@ export default function Dashboard() {
             <button
               onClick={togglePlayPause}
               disabled={!currentSong}
-              className="w-10 h-10 rounded-full bg-brand-accent hover:bg-brand-accent-hover text-white flex items-center justify-center shadow-lg active:scale-95 transition-all cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
+              className="w-10 h-10 rounded-full bg-brand-accent hover:bg-brand-accent-hover text-white flex items-center justify-center shadow-lg active:scale-95 transition-all cursor-pointer disabled:opacity-40 disabled:pointer-events-none shrink-0"
             >
               {isPlaying ? (
                 <Pause className="w-5 h-5 text-white" />
@@ -1669,6 +1854,17 @@ export default function Dashboard() {
               title="Next track"
             >
               <SkipForward className="w-5 h-5 fill-current" />
+            </button>
+            <button
+              onClick={() => setIsAutoPlay(!isAutoPlay)}
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer inline-flex ${
+                isAutoPlay
+                  ? "text-brand-accent hover:text-brand-accent"
+                  : "text-brand-text-secondary hover:text-white"
+              }`}
+              title={isAutoPlay ? "Autoplay Enabled" : "Autoplay Disabled"}
+            >
+              <Repeat className="w-4 h-4" />
             </button>
           </div>
 
